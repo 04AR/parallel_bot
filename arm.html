@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Five-Bar Parallel Bot Inverse Kinematics</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+            flex-direction: column;
+        }
+
+        canvas {
+            border: 1px solid #ccc;
+            background-color: #fff;
+        }
+
+        #info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 10px;
+            border-radius: 5px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+
+        #connect-btn {
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        #connect-btn:hover {
+            background-color: #0056b3;
+        }
+
+        #status {
+            margin-top: 10px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="info">
+    <p>Move the mouse over the canvas to control the end-effector.</p>
+</div>
+<canvas id="canvas" width="600" height="600"></canvas>
+<button id="connect-btn">Connect to Arduino</button>
+<div id="status">Status: Disconnected</div>
+
+<script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const connectBtn = document.getElementById('connect-btn');
+    const statusDiv = document.getElementById('status');
+
+    const origin1 = { x: 250, y: 300 }; // Fixed base for the first link
+    const origin2 = { x: 450, y: 300 }; // Fixed base for the second link
+    const link1Length = 150;
+    const link2Length = 150;
+    let target = { x: 300, y: 300 }; // Initial target position
+
+    let port;
+    let writer;
+
+    async function connectToArduino() {
+        try {
+            port = await navigator.serial.requestPort();
+            await port.open({ baudRate: 9600 });
+            writer = port.writable.getWriter();
+            statusDiv.textContent = "Status: Connected";
+            connectBtn.disabled = true;
+        } catch (error) {
+            console.error("Error connecting to Arduino:", error);
+            statusDiv.textContent = "Status: Connection Failed";
+        }
+    }
+
+    function sendDataToArduino(data) {
+        if (writer) {
+            const encoder = new TextEncoder();
+            writer.write(encoder.encode(data + '\n'));
+        }
+    }
+
+    function drawCircle(x, y, radius, color) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.closePath();
+    }
+
+    function drawLine(x1, y1, x2, y2, color) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.closePath();
+    }
+
+    function inverseKinematics(targetX, targetY) {
+        // Solve for angles using geometric approach
+        const d1 = Math.hypot(targetX - origin1.x, targetY - origin1.y);
+        const d2 = Math.hypot(targetX - origin2.x, targetY - origin2.y);
+
+        if (d1 > link1Length + link2Length || d2 > link1Length + link2Length) {
+            return null; // Target is unreachable
+        }
+
+        const angle1 = Math.acos((d1 * d1 + link1Length * link1Length - link2Length * link2Length) / (2 * d1 * link1Length));
+        const angle2 = Math.acos((d2 * d2 + link1Length * link1Length - link2Length * link1Length) / (2 * d2 * link1Length));
+
+        const theta1 = Math.atan2(targetY - origin1.y, targetX - origin1.x) - angle1;
+        const theta2 = Math.atan2(targetY - origin2.y, targetX - origin2.x) + angle2;
+
+        const elbow1 = {
+            x: origin1.x + link1Length * Math.cos(theta1),
+            y: origin1.y + link1Length * Math.sin(theta1),
+        };
+
+        const elbow2 = {
+            x: origin2.x + link1Length * Math.cos(theta2),
+            y: origin2.y + link1Length * Math.sin(theta2),
+        };
+
+        const m1 = Math.round(-(theta1 * (180 / Math.PI)));
+        const m2 = Math.round(-(theta2 * (180 / Math.PI)));
+
+        console.log("Theta1: ", m1, "Theta2: ", m2);
+
+        sendDataToArduino(`${m1},${m2}`);
+
+        return { theta1, theta2, elbow1, elbow2 };
+    }
+
+    function drawBot() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // Inverse kinematics calculation
+        const ik = inverseKinematics(target.x, target.y);
+        if (!ik) {
+            ctx.fillStyle = "red";
+            ctx.font = "20px Arial";
+            ctx.fillText("Target unreachable", 10, 30);
+            return;
+        }
+
+        const { elbow1, elbow2 } = ik;
+
+        // Draw fixed base points
+        drawCircle(origin1.x, origin1.y, 5, "black");
+        drawCircle(origin2.x, origin2.y, 5, "black");
+
+        // Draw links
+        drawLine(origin1.x, origin1.y, elbow1.x, elbow1.y, "blue");
+        drawLine(origin2.x, origin2.y, elbow2.x, elbow2.y, "green");
+        drawLine(elbow1.x, elbow1.y, target.x, target.y, "blue");
+        drawLine(elbow2.x, elbow2.y, target.x, target.y, "green");
+
+        // Draw elbows and end-effector
+        drawCircle(elbow1.x, elbow1.y, 5, "blue");
+        drawCircle(elbow2.x, elbow2.y, 5, "green");
+        drawCircle(target.x, target.y, 7, "red");
+    }
+
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        target.x = e.clientX - rect.left;
+        target.y = e.clientY - rect.top;
+        // Ensure the target doesn't go below the height of the joints
+        const minHeight = Math.min(origin1.y-30, origin2.y-30);
+        if (target.y > minHeight) {
+            target.y = minHeight;
+        }
+        drawBot();
+    });
+
+    connectBtn.addEventListener('click', connectToArduino);
+
+    drawBot();
+</script>
+
+</body>
+</html>
